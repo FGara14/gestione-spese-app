@@ -525,30 +525,3 @@
 
 </body>
 </html>
-```
-
-**Modifiche Principali:**
-
-* **HTML:**
-    * Aggiunta la `emailPasswordSection` che contiene due form: `registrationForm` e `loginForm`.
-    * Ogni form ha input per email e password e un pulsante dedicato.
-* **JavaScript:**
-    * Importate `createUserWithEmailAndPassword` e `signInWithEmailAndPassword`.
-    * Aggiunti gli elementi del DOM per i nuovi form e input.
-    * Le funzioni `handleSignUpWithEmailPassword` e `handleSignInWithEmailPassword` gestiscono la logica di registrazione e accesso.
-    * La funzione `showError` è stata aggiornata per tradurre alcuni codici di errore comuni di Firebase in messaggi più chiari in italiano.
-    * La funzione `displayLoginOptions` ora mostra anche la `emailPasswordSection` quando l'utente non è loggato.
-    * Quando l'utente si autentica, la `emailPasswordSection` viene nascosta insieme alla `authSection` (Google/Anonimo).
-* **CSS:**
-    * Aggiunti alcuni stili base per i titoli dei form (`form-title`) e per i form stessi (`email-password-form`) per una migliore separazione visiva.
-
-**Cosa devi fare:**
-
-1.  **Abilita il Provider Email/Password in Firebase:**
-    * Vai alla [Console di Firebase](https://console.firebase.google.com/).
-    * Seleziona il tuo progetto.
-    * Nel menu a sinistra, vai su **Authentication**.
-    * Seleziona la scheda **Sign-in method** (Metodi di accesso).
-    * Trova "Email/Password" nell'elenco e **abilitalo**.
-
-Una volta abilitato in Firebase, dovresti essere in grado di registrare nuovi utenti e farli accedere con le loro credenziali email/password. Ricorda che la gestione degli errori (password debole, email già in uso, ecc.) è gestita dal codice e mostrerà messaggi all'uten
