@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestione Spese Ricorrenti</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script type="module">
+        // Importa le funzioni necessarie da Firebase SDK
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken,
+            onAuthStateChanged, 
+            setPersistence, 
+            browserLocalPersistence, 
+            GoogleAuthProvider, 
+            signInWithPopup, 
+            signOut,
+            createUserWithEmailAndPassword, // Per registrazione email/password
+            signInWithEmailAndPassword    // Per login email/password
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            collection, 
+            addDoc, 
+            doc, 
+            deleteDoc, 
+            onSnapshot, 
+            query, 
+            setLogLevel
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configurazione Firebase (verrà iniettata dall'ambiente Canvas o usa i placeholder)
+        const firebaseConfig = {
+		  apiKey: "AIzaSyAfonORMsWTVwtCqiRs3IEHRCiUoSoMcjE",
+		  authDomain: "gestione-spese-ced86.firebaseapp.com",
+		  projectId: "gestione-spese-ced86",
+		  storageBucket: "gestione-spese-ced86.firebasestorage.app",
+		  messagingSenderId: "542334743516",
+		  appId: "1:542334743516:web:439e0932ae29e697dd1519",
+		  measurementId: "G-52WVW3MCFM"
+		};
+        const appId = "1:542334743516:web:439e0932ae29e697dd1519";
+
+        // Inizializza Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        // setLogLevel('debug');
+
+        let userId = null; 
+        let expensesCollectionRef; 
+        let expensesListener = null; 
+
+        // Elementi del DOM
+        const expenseForm = document.getElementById('expenseForm');
+        const descriptionInput = document.getElementById('description');
+        const amountInput = document.getElementById('amount');
+        const billingDayInput = document.getElementById('billingDay');
+        const expensesList = document.getElementById('expensesList');
+        const totalMonthlyCostElement = document.getElementById('totalMonthlyCost');
+        
+        const authStatusElement = document.getElementById('authStatus');
+        const notificationInfoElement = document.getElementById('notificationInfo');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const errorMessages = document.getElementById('errorMessages');
+        const authSection = document.getElementById('authSection');
+        const signInGoogleButton = document.getElementById('signInGoogleButton');
+        const signInAnonymouslyButton = document.getElementById('signInAnonymouslyButton');
+        const signOutButton = document.getElementById('signOutButton');
+        const userEmailElement = document.getElementById('userEmail');
+        const appContainer = document.getElementById('appContainer');
+
+        // Elementi per Email/Password Auth
+        const emailPasswordSection = document.getElementById('emailPasswordSection');
+        const registrationForm = document.getElementById('registrationForm');
+        const regEmailInput = document.getElementById('regEmail');
+        const regPasswordInput = document.getElementById('regPassword');
+        const loginForm = document.getElementById('loginForm');
+        const loginEmailInput = document.getElementById('loginEmail');
+        const loginPasswordInput = document.getElementById('loginPassword');
+
+
+        function showError(message, isAuthError = false) {
+            // Sostituisce i codici di errore Firebase con messaggi più user-friendly in italiano
+            if (isAuthError) {
+                switch (message) {
+                    case "Firebase: Error (auth/email-already-in-use).":
+                        message = "L'indirizzo email è già registrato. Prova ad accedere.";
+                        break;
+                    case "Firebase: Error (auth/invalid-email).":
+                        message = "L'indirizzo email non è valido.";
+                        break;
+                    case "Firebase: Error (auth/operation-not-allowed).":
+                        message = "L'accesso con email/password non è abilitato. Contatta l'amministratore.";
+                        break;
+                    case "Firebase: Error (auth/weak-password).":
+                        message = "La password è troppo debole. Deve essere di almeno 6 caratteri.";
+                        break;
+                    case "Firebase: Error (auth/user-not-found).":
+                    case "Firebase: Error (auth/wrong-password).":
+                    case "Firebase: Error (auth/invalid-credential).": // Nuovo codice errore per credenziali non valide
+                        message = "Email o password non corretti.";
+                        break;
+                    case "Firebase: Error (auth/too-many-requests).":
+                        message = "Troppi tentativi di accesso falliti. Riprova più tardi.";
+                        break;
+                }
+            }
+            errorMessages.textContent = message;
+            errorMessages.classList.remove('hidden');
+            setTimeout(() => {
+                errorMessages.classList.add('hidden');
+                errorMessages.textContent = '';
+            }, 7000);
+        }
+        
+        function clearExpensesData() {
+            expensesList.innerHTML = '<p class="text-gray-500">Nessuna spesa aggiunta.</p>';
+            totalMonthlyCostElement.textContent = "0.00";
+            if (expensesListener) {
+                expensesListener(); 
+                expensesListener = null;
+            }
+        }
+
+        function displayLoginOptions() {
+            userId = null;
+            expensesCollectionRef = null;
+            clearExpensesData();
+            authStatusElement.textContent = "Effettua l'accesso per continuare.";
+            userEmailElement.classList.add('hidden');
+            userEmailElement.textContent = "";
+            authSection.classList.remove('hidden');
+            emailPasswordSection.classList.remove('hidden'); // Mostra anche la sezione email/password
+            appContainer.classList.add('hidden');
+            signOutButton.classList.add('hidden');
+            loadingIndicator.classList.add('hidden');
+        }
+
+        async function initializeAuth() {
+            try {
+                await setPersistence(auth, browserLocalPersistence);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        authStatusElement.textContent = `Connesso come:`;
+                        userEmailElement.textContent = user.isAnonymous ? "Utente Anonimo" : user.email || user.displayName || `UserID: ${user.uid.substring(0,8)}...`;
+                        userEmailElement.classList.remove('hidden');
+                        
+                        expensesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/recurringExpenses`);
+                        loadExpenses();
+                        
+                        authSection.classList.add('hidden');
+                        emailPasswordSection.classList.add('hidden'); // Nasconde la sezione email/password
+                        appContainer.classList.remove('hidden');
+                        signOutButton.classList.remove('hidden');
+                        loadingIndicator.classList.add('hidden');
+                    } else {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            console.log("Tentativo di accesso con token custom dall'ambiente Canvas...");
+                            loadingIndicator.classList.remove('hidden');
+                            try {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } catch (customTokenError) {
+                                console.error("Errore con token custom:", customTokenError);
+                                showError("Token di autenticazione fornito non valido o scaduto. Prova ad accedere manualmente. Errore: " + customTokenError.message, true);
+                                displayLoginOptions();
+                            }
+                        } else {
+                            console.log("Nessun token custom, mostro opzioni di login manuale.");
+                            displayLoginOptions();
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error("Errore durante l'inizializzazione dell'autenticazione:", error);
+                showError("Errore di autenticazione: " + error.message, true);
+                displayLoginOptions();
+            }
+        }
+
+        async function handleSignInWithGoogle() {
+            loadingIndicator.classList.remove('hidden');
+            authSection.classList.add('hidden');
+            emailPasswordSection.classList.add('hidden');
+            const provider = new GoogleAuthProvider();
+            try {
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                console.error("Errore accesso con Google:", error);
+                showError("Errore accesso Google: " + error.message + (error.code === 'auth/popup-closed-by-user' ? ' (Finestra chiusa)' : ''), true);
+                displayLoginOptions();
+            }
+        }
+
+        async function handleSignInAnonymously() {
+            loadingIndicator.classList.remove('hidden');
+            authSection.classList.add('hidden');
+            emailPasswordSection.classList.add('hidden');
+            try {
+                await signInAnonymously(auth);
+            } catch (error) {
+                console.error("Errore accesso anonimo:", error);
+                showError("Errore accesso anonimo: " + error.message, true);
+                displayLoginOptions();
+            }
+        }
+
+        async function handleSignUpWithEmailPassword(event) {
+            event.preventDefault();
+            const email = regEmailInput.value;
+            const password = regPasswordInput.value;
+            if (!email || !password) {
+                showError("Inserisci email e password per registrarti.");
+                return;
+            }
+            loadingIndicator.classList.remove('hidden');
+            authSection.classList.add('hidden');
+            emailPasswordSection.classList.add('hidden');
+            try {
+                await createUserWithEmailAndPassword(auth, email, password);
+                registrationForm.reset();
+            } catch (error) {
+                console.error("Errore registrazione:", error);
+                showError(error.message, true); // Firebase error messages are often user-friendly enough or will be translated by showError
+                displayLoginOptions();
+            }
+        }
+
+        async function handleSignInWithEmailPassword(event) {
+            event.preventDefault();
+            const email = loginEmailInput.value;
+            const password = loginPasswordInput.value;
+            if (!email || !password) {
+                showError("Inserisci email e password per accedere.");
+                return;
+            }
+            loadingIndicator.classList.remove('hidden');
+            authSection.classList.add('hidden');
+            emailPasswordSection.classList.add('hidden');
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                loginForm.reset();
+            } catch (error) {
+                console.error("Errore accesso email/password:", error);
+                showError(error.message, true);
+                displayLoginOptions();
+            }
+        }
+
+
+        async function handleSignOut() {
+            try {
+                await signOut(auth);
+                // onAuthStateChanged gestirà la pulizia dell'UI
+            } catch (error) {
+                console.error("Errore durante il logout:", error);
+                showError("Errore logout: " + error.message, true);
+            }
+        }
+
+        async function addExpense(event) {
+            event.preventDefault();
+            if (!userId || !expensesCollectionRef) {
+                showError("Utente non autenticato. Impossibile aggiungere la spesa.");
+                return;
+            }
+            const description = descriptionInput.value.trim();
+            const amount = parseFloat(amountInput.value);
+            const billingDay = parseInt(billingDayInput.value);
+            if (!description || isNaN(amount) || amount <= 0 || isNaN(billingDay) || billingDay < 1 || billingDay > 31) {
+                showError("Dati non validi: inserisci descrizione, importo (>0) e giorno (1-31).");
+                return;
+            }
+            try {
+                await addDoc(expensesCollectionRef, { description, amount, billingDay, createdAt: new Date() });
+                expenseForm.reset();
+            } catch (error) {
+                console.error("Errore aggiunta spesa:", error);
+                showError("Errore Firestore (aggiunta spesa): " + error.message);
+            }
+        }
+
+        function loadExpenses() {
+            if (!userId || !expensesCollectionRef) return;
+            if (expensesListener) { expensesListener(); }
+
+            expensesListener = onSnapshot(query(expensesCollectionRef), (snapshot) => {
+                expensesList.innerHTML = ''; 
+                let totalMonthlyCost = 0;
+                const today = new Date().getDate(); 
+
+                if (snapshot.empty) {
+                    expensesList.innerHTML = '<li class="text-gray-500 p-4 text-center">Nessuna spesa ricorrente aggiunta.</li>';
+                } else {
+                    snapshot.forEach(docSnapshot => {
+                        const expense = docSnapshot.data();
+                        const expenseId = docSnapshot.id;
+                        totalMonthlyCost += expense.amount;
+                        const li = document.createElement('li');
+                        li.className = `p-4 border rounded-lg shadow-sm flex justify-between items-center mb-3 transition-all duration-300 ease-in-out`;
+                        if (expense.billingDay === today) {
+                            li.classList.add('bg-yellow-100', 'border-yellow-400', 'ring-2', 'ring-yellow-300');
+                        } else {
+                            li.classList.add('bg-white');
+                        }
+                        li.innerHTML = `
+                            <div class="flex-grow mr-3">
+                                <h3 class="font-semibold text-lg text-gray-800 break-all">${expense.description}</h3>
+                                <p class="text-gray-600">Importo: ${expense.amount.toFixed(2)} €</p>
+                                <p class="text-sm text-gray-500">Giorno fatt.: ${expense.billingDay}</p>
+                            </div>
+                            <button data-id="${expenseId}" class="delete-btn bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-3 rounded-lg shadow transition-colors duration-150 text-sm">
+                                Elimina
+                            </button>
+                        `;
+                        expensesList.appendChild(li);
+                    });
+                }
+                totalMonthlyCostElement.textContent = totalMonthlyCost.toFixed(2);
+                document.querySelectorAll('.delete-btn').forEach(button => {
+                    button.addEventListener('click', async (event) => {
+                        if (!userId || !expensesCollectionRef) return;
+                        const idToDelete = event.target.dataset.id;
+                        if (confirm("Sei sicuro di voler eliminare questa spesa?")) {
+                            try {
+                                await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/recurringExpenses`, idToDelete));
+                            } catch (error) {
+                                console.error("Errore eliminazione spesa:", error);
+                                showError("Errore Firestore (eliminazione): " + error.message);
+                            }
+                        }
+                    });
+                });
+            }, (error) => {
+                console.error("Errore caricamento spese: ", error);
+                showError("Errore Firestore (caricamento): " + error.message + ". Controlla le regole di sicurezza e la connessione.");
+                expensesList.innerHTML = '<li class="text-red-500 p-4 text-center">Impossibile caricare le spese.</li>';
+            });
+        }
+        
+        notificationInfoElement.innerHTML = `
+            <h3 class="font-semibold text-blue-700">Info Notifiche:</h3>
+            <p class="text-sm text-blue-600">
+                L'app evidenzia le spese in scadenza oggi. Notifiche email automatiche richiedono un backend.
+            </p>
+        `;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            expenseForm.addEventListener('submit', addExpense);
+            signInGoogleButton.addEventListener('click', handleSignInWithGoogle);
+            signInAnonymouslyButton.addEventListener('click', handleSignInAnonymously);
+            signOutButton.addEventListener('click', handleSignOut);
+            registrationForm.addEventListener('submit', handleSignUpWithEmailPassword);
+            loginForm.addEventListener('submit', handleSignInWithEmailPassword);
+            
+            if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY" || !firebaseConfig.projectId) {
+                 if (typeof __firebase_config === 'undefined') {
+                    showError("Configurazione Firebase mancante o incompleta. L'app potrebbe non funzionare correttamente al di fuori dell'ambiente Canvas senza una configurazione manuale.");
+                 }
+            }
+            initializeAuth(); 
+        });
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f0f4f8; }
+        .container { max-width: 700px; margin: 1rem auto; padding: 1.5rem; background-color: #ffffff; border-radius: 12px; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1); }
+        @media (max-width: 640px) { .container { margin: 0.5rem; padding: 1rem; } }
+        h1 { color: #1e3a8a; font-size: 2rem; }
+        h2 { color: #1e3a8a; font-size: 1.5rem; }
+        h3.form-title { color: #374151; font-size: 1.25rem; margin-bottom: 1rem; text-align: center; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.5rem;}
+        label { color: #374151; }
+        input[type="text"], input[type="number"], input[type="email"], input[type="password"] { 
+            border-color: #9ca3af; 
+            transition: border-color 0.3s, box-shadow 0.3s;
+            class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
+        }
+        input[type="text"]:focus, input[type="number"]:focus, input[type="email"]:focus, input[type="password"]:focus { 
+            border-color: #3b82f6; 
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+        }
+        .btn { padding: 0.6rem 1.2rem; border-radius: 0.5rem; font-weight: 600; transition: background-color 0.2s ease-in-out; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .btn-primary { background-color: #2563eb; color: white; }
+        .btn-primary:hover { background-color: #1d4ed8; }
+        .btn-secondary { background-color: #4ade80; color: white; } 
+        .btn-secondary:hover { background-color: #22c55e; }
+        .btn-neutral { background-color: #64748b; color: white; } 
+        .btn-neutral:hover { background-color: #475569; }
+        .btn-danger { background-color: #ef4444; color: white; } 
+        .btn-danger:hover { background-color: #dc2626; }
+        .btn-success { background-color: #10b981; color: white; } /* Per pulsanti Registrati/Accedi */
+        .btn-success:hover { background-color: #059669; }
+        .total-card { background-color: #e0f2fe; border-left: 5px solid #0ea5e9; }
+        #errorMessages { transition: opacity 0.5s ease-in-out; }
+        .auth-button { display: flex; align-items: center; justify-content: center; }
+        .auth-button svg { margin-right: 0.75rem; }
+        #expensesList li { word-break: break-word; } 
+        .email-password-form { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e5e7eb;}
+    </style>
+</head>
+<body class="antialiased text-gray-900">
+
+    <div id="loadingIndicator" class="fixed inset-0 bg-white bg-opacity-90 flex items-center justify-center z-50">
+        <div class="text-center">
+            <svg class="animate-spin h-12 w-12 text-blue-600 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="text-lg font-semibold text-gray-700">Caricamento...</p>
+        </div>
+    </div>
+    
+    <div class="container">
+        <header class="mb-6 text-center">
+            <h1 class="font-bold mb-1">Gestione Spese</h1>
+            <p id="authStatus" class="text-md text-gray-600">Autenticazione...</p>
+            <p id="userEmail" class="text-sm text-blue-600 font-medium hidden"></p>
+            <button id="signOutButton" class="hidden mt-3 btn btn-danger text-xs">
+                Esci
+            </button>
+        </header>
+
+        <div id="errorMessages" class="hidden bg-red-100 border-l-4 border-red-500 text-red-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
+            <span class="block sm:inline"></span>
+        </div>
+
+        <section id="authSection" class="mb-8 p-6 bg-gray-50 rounded-xl shadow-md text-center hidden">
+            <h2 class="font-semibold mb-6">Scegli un metodo di accesso</h2>
+            <div class="space-y-3">
+                <button id="signInGoogleButton" class="w-full auth-button btn btn-secondary">
+                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M21.878 10.338H21.87V10.33H12.18V13.69H17.81C17.591 14.838 16.881 15.869 15.81 16.56V18.81H18.68C20.64 17.019 21.879 14.258 21.879 10.338Z"/><path d="M12.1802 22.0002C15.0202 22.0002 17.4402 21.0902 19.0102 19.4302L16.1402 17.1802C15.2002 17.8502 13.8902 18.3802 12.1802 18.3802C9.04018 18.3802 6.40018 16.3602 5.35018 13.7102H2.38018V16.0502C3.98018 19.4502 7.80018 22.0002 12.1802 22.0002Z"/><path d="M5.34982 13.71C5.14982 13.08 5.02982 12.43 5.02982 11.75C5.02982 11.07 5.14982 10.42 5.34982 9.79001V7.45001H2.37982C1.53982 9.04001 1.01982 10.81 1.01982 12.75C1.01982 14.69 1.53982 16.46 2.37982 18.05L5.34982 15.21V13.71Z" /><path d="M12.1802 5.12001C14.0302 5.12001 15.3602 5.83001 16.0302 6.47001L18.7602 3.82001C17.0002 2.25001 14.6402 1.50001 12.1802 1.50001C7.80018 1.50001 3.98018 4.05001 2.38018 7.45001L5.35018 9.79001C6.40018 7.14001 9.04018 5.12001 12.1802 5.12001Z"/></svg>
+                    Accedi con Google
+                </button>
+                <button id="signInAnonymouslyButton" class="w-full auth-button btn btn-neutral">
+                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                    Accedi come Anonimo
+                </button>
+            </div>
+        </section>
+        
+        <section id="emailPasswordSection" class="mb-8 p-6 bg-gray-50 rounded-xl shadow-md hidden">
+            <form id="registrationForm" class="email-password-form">
+                <h3 class="form-title font-semibold">Non hai un account? Registrati</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label for="regEmail" class="block text-sm font-medium mb-1">Email:</label>
+                        <input type="email" id="regEmail" required class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label for="regPassword" class="block text-sm font-medium mb-1">Password (min. 6 caratteri):</label>
+                        <input type="password" id="regPassword" required class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <button type="submit" class="w-full btn btn-success">Registrati con Email</button>
+                </div>
+            </form>
+
+            <form id="loginForm" class="email-password-form mt-6">
+                <h3 class="form-title font-semibold">Hai già un account? Accedi</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label for="loginEmail" class="block text-sm font-medium mb-1">Email:</label>
+                        <input type="email" id="loginEmail" required class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label for="loginPassword" class="block text-sm font-medium mb-1">Password:</label>
+                        <input type="password" id="loginPassword" required class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <button type="submit" class="w-full btn btn-success">Accedi con Email</button>
+                </div>
+            </form>
+        </section>
+
+
+        <div id="appContainer" class="hidden">
+            <section id="addExpenseSection" class="mb-8 p-6 bg-gray-50 rounded-xl shadow-md">
+                <h2 class="font-semibold mb-5 text-center">Aggiungi Nuova Spesa</h2>
+                <form id="expenseForm" class="space-y-5">
+                    <div>
+                        <label for="description" class="block text-sm font-medium mb-1">Descrizione:</label>
+                        <input type="text" id="description" name="description" required
+                               class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label for="amount" class="block text-sm font-medium mb-1">Importo (€):</label>
+                            <input type="number" id="amount" name="amount" step="0.01" min="0.01" required
+                                   class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        </div>
+                        <div>
+                            <label for="billingDay" class="block text-sm font-medium mb-1">Giorno Fatt.:</label>
+                            <input type="number" id="billingDay" name="billingDay" min="1" max="31" required
+                                   class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        </div>
+                    </div>
+                    <button type="submit" class="w-full btn btn-primary font-semibold py-2.5">
+                        Aggiungi Spesa
+                    </button>
+                </form>
+            </section>
+
+            <section id="expensesListSection" class="mb-8">
+                <h2 class="font-semibold mb-5 text-center">Elenco Spese</h2>
+                <ul id="expensesList" class="space-y-3">
+                    </ul>
+            </section>
+
+            <section id="totalSection" class="p-5 total-card rounded-xl shadow-md text-center">
+                <h2 class="text-xl font-semibold mb-1 text-gray-800">Totale Mensile</h2>
+                <p class="text-3xl font-bold text-blue-700">
+                    <span id="totalMonthlyCost">0.00</span> €
+                </p>
+            </section>
+
+            <section id="notificationInfoSection" class="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg text-xs">
+                 <div id="notificationInfo">
+                    </div>
+            </section>
+        </div>
+    </div>
+
+</body>
+</html>
+```
+
+**Modifiche Principali:**
+
+* **HTML:**
+    * Aggiunta la `emailPasswordSection` che contiene due form: `registrationForm` e `loginForm`.
+    * Ogni form ha input per email e password e un pulsante dedicato.
+* **JavaScript:**
+    * Importate `createUserWithEmailAndPassword` e `signInWithEmailAndPassword`.
+    * Aggiunti gli elementi del DOM per i nuovi form e input.
+    * Le funzioni `handleSignUpWithEmailPassword` e `handleSignInWithEmailPassword` gestiscono la logica di registrazione e accesso.
+    * La funzione `showError` è stata aggiornata per tradurre alcuni codici di errore comuni di Firebase in messaggi più chiari in italiano.
+    * La funzione `displayLoginOptions` ora mostra anche la `emailPasswordSection` quando l'utente non è loggato.
+    * Quando l'utente si autentica, la `emailPasswordSection` viene nascosta insieme alla `authSection` (Google/Anonimo).
+* **CSS:**
+    * Aggiunti alcuni stili base per i titoli dei form (`form-title`) e per i form stessi (`email-password-form`) per una migliore separazione visiva.
+
+**Cosa devi fare:**
+
+1.  **Abilita il Provider Email/Password in Firebase:**
+    * Vai alla [Console di Firebase](https://console.firebase.google.com/).
+    * Seleziona il tuo progetto.
+    * Nel menu a sinistra, vai su **Authentication**.
+    * Seleziona la scheda **Sign-in method** (Metodi di accesso).
+    * Trova "Email/Password" nell'elenco e **abilitalo**.
+
+Una volta abilitato in Firebase, dovresti essere in grado di registrare nuovi utenti e farli accedere con le loro credenziali email/password. Ricorda che la gestione degli errori (password debole, email già in uso, ecc.) è gestita dal codice e mostrerà messaggi all'uten
